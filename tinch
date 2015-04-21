@@ -2,7 +2,8 @@
 
 if [ "`id -u`" != "0" ]; then
   echo "You must be root to run this command. Retrying with sudo..."
-  exec sudo $0 $@
+  OLD_USER=$USER
+  exec sudo -E $0 $@
   exit 1
 fi
 
@@ -89,6 +90,55 @@ EOF
 
   echo "Network ${NETWORK_NAME} Setup Successfully.  Run '$0 start ${NETWORK_NAME}' to bring network up."
   echo "Note: You must copy the file '$HOST_PATH/$HOST_NAME' to any other client you want to connect, as well as copy their host file to this machine."
+  echo "      Run '$0 hosts' to use SSH to distribute your host file and grab others'"
+
+  chmod 666 /etc/tinc/${HOST_PATH}/*
+  chmod 777 /etc/tinc/${HOST_PATH}
+
+elif [ "$1" == "hosts" ]; then
+
+  [ "$2" == "" ] && echo "Usage: $0 hosts <network name>" && exit 1
+
+  ls -A1 /etc/tinc/$2/hosts
+
+  echo "Which host file to distribute? [*] "
+  read HFILE
+
+  HFILE=${HFILE:-'*'}
+
+  echo "Distributing $HFILE for network '$2'..."
+
+  TARGET="----"
+
+  while [ "$TARGET" != "done" ] && [ "$TARGET" != "" ]; do
+    echo -n "Target: "
+    read TARGET
+
+    mkdir -p /tmp/$TARGET-$2/
+
+    echo "Copying all target hosts file to /tmp/$TARGET-$2/"
+    scp $TARGET:/etc/tinc/$2/hosts/* /tmp/$TARGET-$2/
+    [ "$?" == "0" ] || (echo "Error copying the files over!" && exit 1)
+
+    echo "Sending our host file"
+    scp /etc/tinc/$2/hosts/$HFILE $TARGET:/etc/tinc/$2/hosts/
+    [ "$?" == "0" ] || (echo "Error copying the files over!" && exit 1)
+
+    echo "Success!" && sleep 2
+
+    ls -a1 /tmp/$TARGET-$2/
+
+    echo "Which of $TARGET's hosts would you like to keep? "
+
+    while [ "$HFILE" != "" && "`echo $HFILE | grep -ei "quit" -ei "exit" -ei "done"`" == "" ]; do
+      echo -n ": "
+      read HFILE
+
+      cp /tmp/$TARGET-$2/$HFILE /etc/tinc/$2/hosts/$HFILE
+      [ "$?" == "0" ] && echo "Done." || echo "Error, check file permissions."
+    done
+  done
+
 elif [ "$1" == "start" ]; then
   if [ ! -e "/etc/tinc/$2/tinc.conf" ]; then
     shift
