@@ -1,0 +1,114 @@
+#!/bin/bash
+
+if [ "`id -u`" != "0" ]; then
+  echo "You must be root to run this command. Retrying with sudo..."
+  exec sudo $0 $@
+  exit 1
+fi
+
+if [ "$1" == "install" ]; then
+  sudo apt-get remove tinc
+  cd /tmp/ && wget wget http://tinc-vpn.org/packages/tinc-1.0.23.tar.gz
+  tar -xf tinc-1.0.23.tar.gz && cd tinc-1.0.23
+  sudo apt-get install zlib1g-dev liblzo2-dev libssl-dev
+  ./configure --prefix=
+  make
+  sudo make install
+
+  exit 0
+elif [ "$1" == "setup" ]; then
+  echo -n "Network name? "
+  read NETWORK_NAME
+
+  echo -n "Host name? "
+  read HOST_NAME
+
+  echo -n "Another host in network? "
+  read OTHER_HOST
+
+  NETWORK_NAME=`echo ${NETWORK_NAME:-""} | sed s/[-\ ]+/_/g`
+
+  [ "$NETWORK_NAME" != "" ] && NET_PATH=/etc/tinc/$NETWORK_NAME || \
+                               NET_PATH=/etc/tinc
+
+  HOST_PATH=$NET_PATH/hosts
+
+  rm -rfI $NET_PATH
+  mkdir -p $HOST_PATH
+
+  cat <<- EOF > $NET_PATH/tinc.conf
+Name=${HOST_NAME}
+Device=/dev/net/tun
+Mode=switch
+EOF
+
+  [ "$OTHER_HOST" != "" ] && echo "ConnectTo=${OTHER_HOST}" >> $NET_PATH/tinc.conf
+
+  echo -e "\n${HOST_PATH}/${HOST_NAME}\n" | tincd -n $NETWORK_NAME -K 4096
+
+  cat ${HOST_PATH}/${HOST_NAME}
+
+  [ ! -e $HOST_PATH/$HOST_NAME ] && echo "Unable to locate tinc host file for $HOST_NAME" && exit 1
+
+  PUBLIC_KEY="`cat $HOST_PATH/$HOST_NAME`"
+
+  echo "Available IP Addresses: "
+  echo "`ifconfig | grep inet | grep -v inet6 | tr -s ' ' | cut -d' ' -f 3`"
+
+  echo "IP Address to listen on: "
+  read PUBLIC_IP
+
+  echo "New Class-C VPN IP Subnet (eg 10.10.0.): "
+  read SUBNET
+  echo "Preset to point to gateway of ${SUBNET}1, make sure some host has that IP"
+  echo "Hosts VPN IP Address (eg 105): "
+  read SUBNET_ADDR
+
+  SUBNET_IP="${SUBNET}${SUBNET_ADDR}"
+
+  cat <<- EOF > $HOST_PATH/$HOST_NAME
+Address=${PUBLIC_IP}
+Port=655
+Compression=0
+Subnet=${SUBNET_IP}/32
+$PUBLIC_KEY
+EOF
+
+  cat <<- EOF > $NET_PATH/tinc-up
+#!/bin/bash
+ifconfig ${NETWORK_NAME} ${SUBNET_IP} netmask 255.255.255.0 up
+route add -net ${SUBNET}0 netmask 255.255.255.0 gw ${SUBNET}1 dev ${NETWORK_NAME}
+EOF
+
+  cat <<- EOF > $NET_PATH/tinc-down
+#!/bin/bash
+ifconfig ${NETWORK_NAME} down
+EOF
+
+  chmod +x $NET_PATH/tinc-*
+
+  echo "Network ${NETWORK_NAME} Setup Successfully.  Run '$0 start ${NETWORK_NAME}' to bring network up."
+  echo "Note: You must copy the file '$HOST_PATH/$HOST_NAME' to any other client you want to connect, as well as copy their host file to this machine."
+elif [ "$1" == "start" ]; then
+  if [ ! -e "/etc/tinc/$2/tinc.conf" ]; then
+    shift
+    NETWORK_NAME="---------"
+    while [ ! -e "/etc/tinc/$NETWORK_NAME/tinc.conf" ]; do
+      echo "Network not found.  Network name: "
+      read NETWORK_NAME
+    done
+  else
+    shift
+    NETWORK_NAME="$1"
+  fi
+
+  shift
+
+  tincd -n ${NETWORK_NAME} -k 2&>/dev/null
+
+  tincd -n ${NETWORK_NAME} $@
+else
+
+  echo "Usage: $0  install | setup | start"
+
+fi
